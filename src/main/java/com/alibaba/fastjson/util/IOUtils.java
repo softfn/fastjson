@@ -1,5 +1,5 @@
 /*
- * Copyright 1999-2101 Alibaba Group.
+ * Copyright 1999-2017 Alibaba Group.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,8 @@
 package com.alibaba.fastjson.util;
 
 import java.io.Closeable;
+import java.io.InputStream;
+import java.io.Reader;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.CharacterCodingException;
@@ -23,7 +25,10 @@ import java.nio.charset.Charset;
 import java.nio.charset.CharsetDecoder;
 import java.nio.charset.CoderResult;
 import java.nio.charset.MalformedInputException;
+import java.security.AccessController;
+import java.security.PrivilegedAction;
 import java.util.Arrays;
+import java.util.Properties;
 
 import com.alibaba.fastjson.JSONException;
 
@@ -31,6 +36,14 @@ import com.alibaba.fastjson.JSONException;
  * @author wenshao[szujobs@hotmail.com]
  */
 public class IOUtils {
+    
+    public  final  static String FASTJSON_PROPERTIES  ="fastjson.properties";
+    
+    public final static String FASTJSON_COMPATIBLEWITHJAVABEAN="fastjson.compatibleWithJavaBean";
+    
+    public final static String FASTJSON_COMPATIBLEWITHFIELDNAME="fastjson.compatibleWithFieldName";
+    
+    public final static Properties DEFAULT_PROPERTIES =new Properties();    
 
     public final static Charset   UTF8                 = Charset.forName("UTF-8");
     
@@ -62,6 +75,46 @@ public class IOUtils {
                 identifierFlags[c] = true;
             } else if (c >= '0' && c <= '9') {
                 identifierFlags[c] = true;
+            }
+        }
+    }
+    
+    static {
+        try {
+            loadPropertiesFromFile();
+        } catch (Throwable e) {
+            //skip
+        }
+    }
+    
+    public static String getStringProperty(String name) {
+        String prop = null;
+        try {
+            prop = System.getProperty(name);
+        } catch (SecurityException e) {
+            //skip
+        }
+        return (prop == null) ? DEFAULT_PROPERTIES.getProperty(name) : prop;
+    }
+    
+    public static void loadPropertiesFromFile(){
+        InputStream imputStream = AccessController.doPrivileged(new PrivilegedAction<InputStream>() {
+            public InputStream run() {
+                ClassLoader cl = Thread.currentThread().getContextClassLoader();
+                if (cl != null) {
+                    return cl.getResourceAsStream(FASTJSON_PROPERTIES);
+                } else {
+                    return ClassLoader.getSystemResourceAsStream(FASTJSON_PROPERTIES);
+                }
+            }
+        });
+        
+        if (null != imputStream) {
+            try {
+                DEFAULT_PROPERTIES.load(imputStream);
+                imputStream.close();
+            } catch (java.io.IOException e) {
+                // skip
             }
         }
     }
@@ -112,7 +165,7 @@ public class IOUtils {
             specicalFlags_singleQuotes[i] = 4;
         }
 
-        for (int i = 127; i <= 160; ++i) {
+        for (int i = 127; i < 160; ++i) {
             specicalFlags_doubleQuotes[i] = 4;
             specicalFlags_singleQuotes[i] = 4;
         }
@@ -639,7 +692,8 @@ public class IOUtils {
                                           (((byte) 0xE0 << 12) ^
                                           ((byte) 0x80 <<  6) ^
                                           ((byte) 0x80 <<  0))));
-                        if (Character.isSurrogate(c)) {
+                        boolean isSurrogate =  c >= Character.MIN_SURROGATE && c < (Character.MAX_SURROGATE + 1);
+                        if (isSurrogate) {
                             return -1;
                         } else {
                             da[dp++] = c;
@@ -668,8 +722,8 @@ public class IOUtils {
                         !Character.isSupplementaryCodePoint(uc)) {
                         return -1;
                     } else {
-                        da[dp++] = Character.highSurrogate(uc);
-                        da[dp++] = Character.lowSurrogate(uc);
+                        da[dp++] =  (char) ((uc >>> 10) + (Character.MIN_HIGH_SURROGATE - (Character.MIN_SUPPLEMENTARY_CODE_POINT >>> 10))); // Character.highSurrogate(uc);
+                        da[dp++] = (char) ((uc & 0x3ff) + Character.MIN_LOW_SURROGATE); // Character.lowSurrogate(uc);
                     }
                     continue;
                 }
@@ -679,5 +733,27 @@ public class IOUtils {
             }
         }
         return dp;
+    }
+
+    /**
+     * @deprecated
+     */
+    public static String readAll(Reader reader) {
+        StringBuilder buf = new StringBuilder();
+
+        try {
+            char[] chars = new char[2048];
+            for (;;) {
+                int len = reader.read(chars, 0, chars.length);
+                if (len < 0) {
+                    break;
+                }
+                buf.append(chars, 0, len);
+            }
+        } catch(Exception ex) {
+            throw new JSONException("read string from reader error", ex);
+        }
+
+        return buf.toString();
     }
 }

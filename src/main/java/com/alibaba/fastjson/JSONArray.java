@@ -1,5 +1,5 @@
 /*
- * Copyright 1999-2101 Alibaba Group.
+ * Copyright 1999-2017 Alibaba Group.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -40,14 +40,16 @@ import java.util.List;
 import java.util.ListIterator;
 import java.util.RandomAccess;
 
+import com.alibaba.fastjson.parser.ParserConfig;
+import com.alibaba.fastjson.parser.deserializer.ObjectDeserializer;
 import com.alibaba.fastjson.util.TypeUtils;
 
 /**
  * @author wenshao[szujobs@hotmail.com]
  */
-@SuppressWarnings("serial")
 public class JSONArray extends JSON implements List<Object>, Cloneable, RandomAccess, Serializable {
 
+    private static final long  serialVersionUID = 1L;
     private final List<Object> list;
     protected transient Object relatedArray;
     protected transient Type   componentType;
@@ -414,6 +416,22 @@ public class JSONArray extends JSON implements List<Object>, Cloneable, RandomAc
         Object value = get(index);
 
         return castToTimestamp(value);
+    }
+
+    /**
+     * @since  1.2.23
+     */
+    public <T> List<T> toJavaList(Class<T> clazz) {
+        List<T> list = new ArrayList<T>(this.size());
+
+        ParserConfig config = ParserConfig.getGlobalInstance();
+
+        for (Object item : this) {
+            T classItem = (T) TypeUtils.cast(item, clazz, config);
+            list.add(classItem);
+        }
+
+        return list;
     }
 
     @Override

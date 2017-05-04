@@ -1,5 +1,5 @@
 /*
- * Copyright 1999-2101 Alibaba Group.
+ * Copyright 1999-2017 Alibaba Group.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -30,7 +30,7 @@ public class SymbolTable {
         this.symbols = new String[tableSize];
         
         this.addSymbol("$ref", 0, 4, "$ref".hashCode());
-        this.addSymbol(JSON.DEFAULT_TYPE_KEY, 0, 5, JSON.DEFAULT_TYPE_KEY.hashCode());
+        this.addSymbol(JSON.DEFAULT_TYPE_KEY, 0, JSON.DEFAULT_TYPE_KEY.length(), JSON.DEFAULT_TYPE_KEY.hashCode());
     }
 
     public String addSymbol(char[] buffer, int offset, int len) {

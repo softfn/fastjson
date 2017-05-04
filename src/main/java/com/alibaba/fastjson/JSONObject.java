@@ -1,5 +1,5 @@
 /*
- * Copyright 1999-2101 Alibaba Group.
+ * Copyright 1999-2017 Alibaba Group.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -48,9 +48,9 @@ import com.alibaba.fastjson.util.TypeUtils;
 /**
  * @author wenshao[szujobs@hotmail.com]
  */
-@SuppressWarnings("serial")
 public class JSONObject extends JSON implements Map<String, Object>, Cloneable, Serializable, InvocationHandler {
 
+    private static final long         serialVersionUID         = 1L;
     private static final int          DEFAULT_INITIAL_CAPACITY = 16;
 
     private final Map<String, Object> map;
@@ -106,6 +106,10 @@ public class JSONObject extends JSON implements Map<String, Object>, Cloneable, 
             return (JSONObject) value;
         }
 
+        if (value instanceof String) {
+            return JSON.parseObject((String) value);
+        }
+
         return (JSONObject) toJSON(value);
     }
 
@@ -114,6 +118,10 @@ public class JSONObject extends JSON implements Map<String, Object>, Cloneable, 
 
         if (value instanceof JSONArray) {
             return (JSONArray) value;
+        }
+
+        if (value instanceof String) {
+            return (JSONArray) JSON.parse((String) value);
         }
 
         return (JSONArray) toJSON(value);

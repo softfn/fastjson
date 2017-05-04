@@ -1,5 +1,5 @@
 /*
- * Copyright 1999-2101 Alibaba Group.
+ * Copyright 1999-2017 Alibaba Group.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -135,6 +135,11 @@ public class ObjectArrayCodec implements ObjectSerializer, ObjectDeserializer {
         if (lexer.token() == JSONToken.LITERAL_STRING) {
             byte[] bytes = lexer.bytesValue();
             lexer.nextToken(JSONToken.COMMA);
+
+            if (bytes.length == 0 && type != byte[].class) {
+                return null;
+            }
+
             return (T) bytes;
         }
 
@@ -174,7 +179,7 @@ public class ObjectArrayCodec implements ObjectSerializer, ObjectDeserializer {
             componentType = componentClass = clazz.getComponentType();
         }
         JSONArray array = new JSONArray();
-        parser.parseArray(componentClass, array, fieldName);
+        parser.parseArray(componentType, array, fieldName);
 
         return (T) toObjectArray(parser, componentClass, array);
     }

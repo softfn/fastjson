@@ -1,5 +1,5 @@
 /*
- * Copyright 1999-2101 Alibaba Group.
+ * Copyright 1999-2017 Alibaba Group.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,7 +39,14 @@ public class BigDecimalCodec implements ObjectSerializer, ObjectDeserializer {
             out.writeNull(SerializerFeature.WriteNullNumberAsZero);
         } else {
             BigDecimal val = (BigDecimal) object;
-            out.write(val.toString());
+
+            String outText;
+            if (out.isEnabled(SerializerFeature.WriteBigDecimalAsPlain)) {
+                outText = val.toPlainString();
+            } else {
+                outText = val.toString();
+            }
+            out.write(outText);
 
             if (out.isEnabled(SerializerFeature.WriteClassName) && fieldType != BigDecimal.class && val.scale() == 0) {
                 out.write('.');

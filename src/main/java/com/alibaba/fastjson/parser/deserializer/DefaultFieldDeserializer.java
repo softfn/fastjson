@@ -4,6 +4,8 @@ import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.util.Map;
 
+import com.alibaba.fastjson.JSONException;
+import com.alibaba.fastjson.annotation.JSONField;
 import com.alibaba.fastjson.parser.DefaultJSONParser;
 import com.alibaba.fastjson.parser.DefaultJSONParser.ResolveTask;
 import com.alibaba.fastjson.parser.JSONToken;
@@ -13,15 +15,25 @@ import com.alibaba.fastjson.util.FieldInfo;
 
 public class DefaultFieldDeserializer extends FieldDeserializer {
 
-    private ObjectDeserializer fieldValueDeserilizer;
+    protected ObjectDeserializer fieldValueDeserilizer;
 
     public DefaultFieldDeserializer(ParserConfig mapping, Class<?> clazz, FieldInfo fieldInfo){
         super(clazz, fieldInfo);
     }
-    
+
     public ObjectDeserializer getFieldValueDeserilizer(ParserConfig config) {
         if (fieldValueDeserilizer == null) {
-            fieldValueDeserilizer = config.getDeserializer(fieldInfo.fieldClass, fieldInfo.fieldType);
+            JSONField annotation = fieldInfo.getAnnotation();
+            if (annotation != null && annotation.deserializeUsing() != Void.class) {
+                Class<?> deserializeUsing = annotation.deserializeUsing();
+                try {
+                    fieldValueDeserilizer = (ObjectDeserializer) deserializeUsing.newInstance();
+                } catch (Exception ex) {
+                    throw new JSONException("create deserializeUsing ObjectDeserializer error", ex);
+                }
+            } else {
+                fieldValueDeserilizer = config.getDeserializer(fieldInfo.fieldClass, fieldInfo.fieldType);
+            }
         }
 
         return fieldValueDeserilizer;
@@ -30,27 +42,33 @@ public class DefaultFieldDeserializer extends FieldDeserializer {
     @Override
     public void parseField(DefaultJSONParser parser, Object object, Type objectType, Map<String, Object> fieldValues) {
         if (fieldValueDeserilizer == null) {
-            fieldValueDeserilizer = parser.getConfig().getDeserializer(fieldInfo);
+            getFieldValueDeserilizer(parser.getConfig());
         }
 
+        Type fieldType = fieldInfo.fieldType;
         if (objectType instanceof ParameterizedType) {
             ParseContext objContext = parser.getContext();
-            objContext.type = objectType;
+            if (objContext != null) {
+                objContext.type = objectType;
+            }
+            fieldType = FieldInfo.getFieldType(this.clazz, objectType, fieldType);
+            fieldValueDeserilizer = parser.getConfig().getDeserializer(fieldType);
         }
 
         // ContextObjectDeserializer
         Object value;
-        if (fieldValueDeserilizer instanceof JavaBeanDeserializer) {
+        if (fieldValueDeserilizer instanceof JavaBeanDeserializer && fieldInfo.parserFeatures != 0) {
             JavaBeanDeserializer javaBeanDeser = (JavaBeanDeserializer) fieldValueDeserilizer;
-            value = javaBeanDeser.deserialze(parser, fieldInfo.fieldType, fieldInfo.name, fieldInfo.parserFeatures);
+            value = javaBeanDeser.deserialze(parser, fieldType, fieldInfo.name, fieldInfo.parserFeatures);
         } else {
-            if (this.fieldInfo.format != null
-                    && fieldValueDeserilizer instanceof ContextObjectDeserializer
-                    ) {
-                value = ((ContextObjectDeserializer)fieldValueDeserilizer) //
-                        .deserialze(parser, fieldInfo.fieldType, fieldInfo.name, fieldInfo.format, fieldInfo.parserFeatures);
+            if (this.fieldInfo.format != null && fieldValueDeserilizer instanceof ContextObjectDeserializer) {
+                value = ((ContextObjectDeserializer) fieldValueDeserilizer) //
+                                                                            .deserialze(parser, fieldType,
+                                                                                        fieldInfo.name,
+                                                                                        fieldInfo.format,
+                                                                                        fieldInfo.parserFeatures);
             } else {
-                value = fieldValueDeserilizer.deserialze(parser, fieldInfo.fieldType, fieldInfo.name);
+                value = fieldValueDeserilizer.deserialze(parser, fieldType, fieldInfo.name);
             }
         }
         if (parser.getResolveStatus() == DefaultJSONParser.NeedToResolve) {
@@ -73,5 +91,9 @@ public class DefaultFieldDeserializer extends FieldDeserializer {
         }
 
         return JSONToken.LITERAL_INT;
+    }
+
+    public void parseFieldUnwrapped(DefaultJSONParser parser, Object object, Type objectType, Map<String, Object> fieldValues) {
+        throw new JSONException("TODO");
     }
 }

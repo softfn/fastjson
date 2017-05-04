@@ -1,5 +1,5 @@
 /*
- * Copyright 1999-2101 Alibaba Group.
+ * Copyright 1999-2017 Alibaba Group.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,6 +20,7 @@ import java.io.Serializable;
 import java.lang.ref.SoftReference;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Type;
 import java.math.BigDecimal;
@@ -56,14 +57,19 @@ import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONAware;
 import com.alibaba.fastjson.JSONException;
 import com.alibaba.fastjson.JSONStreamAware;
+import com.alibaba.fastjson.PropertyNamingStrategy;
 import com.alibaba.fastjson.annotation.JSONField;
 import com.alibaba.fastjson.annotation.JSONType;
 import com.alibaba.fastjson.parser.deserializer.Jdk8DateCodec;
 import com.alibaba.fastjson.parser.deserializer.OptionalCodec;
+import com.alibaba.fastjson.support.springfox.SwaggerJsonSerializer;
 import com.alibaba.fastjson.util.ASMUtils;
+import com.alibaba.fastjson.util.FieldInfo;
 import com.alibaba.fastjson.util.IdentityHashMap;
 import com.alibaba.fastjson.util.ServiceLoader;
 import com.alibaba.fastjson.util.TypeUtils;
+
+import javax.xml.datatype.XMLGregorianCalendar;
 
 /**
  * circular references detect
@@ -77,11 +83,17 @@ public class SerializeConfig {
     private static boolean                                awtError        = false;
     private static boolean                                jdk8Error       = false;
     private static boolean                                oracleJdbcError = false;
+    private static boolean                                springfoxError  = false;
+    private static boolean                                guavaError      = false;
+
     private boolean                                       asm             = !ASMUtils.IS_ANDROID;
     private ASMSerializerFactory                          asmFactory;
     protected String                                      typeKey         = JSON.DEFAULT_TYPE_KEY;
+    public PropertyNamingStrategy                         propertyNamingStrategy;
 
     private final IdentityHashMap<Type, ObjectSerializer> serializers;
+
+    private final boolean                                 fieldBased;
     
 	public String getTypeKey() {
 		return typeKey;
@@ -90,7 +102,7 @@ public class SerializeConfig {
 	public void setTypeKey(String typeKey) {
 		this.typeKey = typeKey;
 	}
-
+	
     private final JavaBeanSerializer createASMSerializer(SerializeBeanInfo beanInfo) throws Exception {
         JavaBeanSerializer serializer = asmFactory.createJavaBeanSerializer(beanInfo);
         
@@ -107,45 +119,100 @@ public class SerializeConfig {
      
         return serializer;
     }
-	
-	private final ObjectSerializer createJavaBeanSerializer(Class<?> clazz) {
-	    SerializeBeanInfo beanInfo = TypeUtils.buildBeanInfo(clazz, null);
+
+    private final ObjectSerializer createJavaBeanSerializer(Class<?> clazz) {
+	    SerializeBeanInfo beanInfo = TypeUtils.buildBeanInfo(clazz, null, propertyNamingStrategy, fieldBased);
+	    if (beanInfo.fields.length == 0 && Iterable.class.isAssignableFrom(clazz)) {
+	        return MiscCodec.instance;
+	    }
+
 	    return createJavaBeanSerializer(beanInfo);
 	}
 	
 	public ObjectSerializer createJavaBeanSerializer(SerializeBeanInfo beanInfo) {
+	    JSONType jsonType = beanInfo.jsonType;
+	    
+	    if (jsonType != null) {
+	        Class<?> serializerClass = jsonType.serializer();
+	        if (serializerClass != Void.class) {
+	            try {
+                    Object seralizer = serializerClass.newInstance();
+                    if (seralizer instanceof ObjectSerializer) {
+                        return (ObjectSerializer) seralizer;
+                    }
+                } catch (Throwable e) {
+                    // skip
+                }
+	        }
+	        
+	        if (jsonType.asm() == false) {
+	            asm = false;
+	        }
+
+            for (SerializerFeature feature : jsonType.serialzeFeatures()) {
+                if (SerializerFeature.WriteNonStringValueAsString == feature //
+                        || SerializerFeature.WriteEnumUsingToString == feature //
+                        || SerializerFeature.NotWriteDefaultValue == feature) {
+                    asm = false;
+                    break;
+                }
+            }
+        }
+	    
 	    Class<?> clazz = beanInfo.beanType;
 		if (!Modifier.isPublic(beanInfo.beanType.getModifiers())) {
 			return new JavaBeanSerializer(beanInfo);
 		}
 
-		boolean asm = this.asm;
+		boolean asm = this.asm && !fieldBased;
 
 		if (asm && asmFactory.classLoader.isExternalClass(clazz)
 				|| clazz == Serializable.class || clazz == Object.class) {
 			asm = false;
 		}
 
-		{
-			JSONType annotation = clazz.getAnnotation(JSONType.class);
-			if (annotation != null && annotation.asm() == false) {
-				asm = false;
-			}
-		}
-
-		if (asm && !ASMUtils.checkName(clazz.getName())) {
+		if (asm && !ASMUtils.checkName(clazz.getSimpleName())) {
 		    asm = false;
 		}
 		
 		if (asm) {
-    		for(Field field : clazz.getDeclaredFields()){
-    			JSONField annotation = field.getAnnotation(JSONField.class);
-                if (annotation != null //
-                    && ((!ASMUtils.checkName(annotation.name())) //
-                        || annotation.format().length() != 0)) {
+    		for(FieldInfo fieldInfo : beanInfo.fields){
+                Field field = fieldInfo.field;
+                if (field != null && !field.getType().equals(fieldInfo.fieldClass)) {
+                    asm = false;
+                    break;
+                }
+
+                Method method = fieldInfo.method;
+                if (method != null && !method.getReturnType().equals(fieldInfo.fieldClass)) {
+                    asm = false;
+                    break;
+                }
+
+    			JSONField annotation = fieldInfo.getAnnotation();
+    			
+    			if (annotation == null) {
+    			    continue;
+    			}
+
+                if ((!ASMUtils.checkName(annotation.name())) //
+                        || annotation.format().length() != 0
+                        || annotation.jsonDirect()
+                        || annotation.serializeUsing() != Void.class
+                        || annotation.unwrapped()
+                        ) {
     				asm = false;
     				break;
     			}
+
+                for (SerializerFeature feature : annotation.serialzeFeatures()) {
+                    if (SerializerFeature.WriteNonStringValueAsString == feature //
+                            || SerializerFeature.WriteEnumUsingToString == feature //
+                            || SerializerFeature.NotWriteDefaultValue == feature) {
+                        asm = false;
+                        break;
+                    }
+                }
     		}
 		}
 		
@@ -155,6 +222,8 @@ public class SerializeConfig {
 			    if (asmSerializer != null) {
 			        return asmSerializer;
 			    }
+			} catch (ClassFormatError e) {
+			    // skip
 			} catch (ClassCastException e) {
 				// skip
 			} catch (Throwable e) {
@@ -185,17 +254,26 @@ public class SerializeConfig {
 		this(1024);
 	}
 
-	public SerializeConfig(int tableSize) {
+    public SerializeConfig(boolean fieldBase) {
+	    this(1024, fieldBase);
+    }
+
+    public SerializeConfig(int tableSize) {
+        this(tableSize, false);
+    }
+
+	public SerializeConfig(int tableSize, boolean fieldBase) {
+	    this.fieldBased = fieldBase;
 	    serializers = new IdentityHashMap<Type, ObjectSerializer>(1024);
 		
 		try {
 		    if (asm) {
 		        asmFactory = new ASMSerializerFactory();
 		    }
-		} catch (NoClassDefFoundError eror) {
+		} catch (Throwable eror) {
 		    asm = false;
-		} catch (ExceptionInInitializerError error) {
-		    asm = false;
+//		} catch (ExceptionInInitializerError error) {
+//		    asm = false;
 		}
 
 		put(Boolean.class, BooleanCodec.instance);
@@ -259,6 +337,16 @@ public class SerializeConfig {
 	    
 	    if (serializer instanceof SerializeFilterable) {
 	        SerializeFilterable filterable = (SerializeFilterable) serializer;
+	        
+	        if (this != SerializeConfig.globalInstance) {
+	            if (filterable == MapSerializer.instance) {
+	                MapSerializer newMapSer = new MapSerializer();
+	                this.put(clazz, newMapSer);
+	                newMapSer.addFilter(filter);
+	                return;
+	            }
+	        }
+	        
 	        filterable.addFilter(filter);
 	    }
 	}
@@ -270,7 +358,7 @@ public class SerializeConfig {
         ObjectSerializer serializer = getObjectWriter(clazz, false);
         
         if (serializer == null) {
-            SerializeBeanInfo beanInfo = TypeUtils.buildBeanInfo(clazz, null);
+            SerializeBeanInfo beanInfo = TypeUtils.buildBeanInfo(clazz, null, propertyNamingStrategy);
             
             if (value) {
                 beanInfo.features |= feature.mask;
@@ -356,7 +444,7 @@ public class SerializeConfig {
                 writer = serializers.get(clazz);
             }
         }
-
+        
         if (writer == null) {
             if (Map.class.isAssignableFrom(clazz)) {
                 put(clazz, MapSerializer.instance);
@@ -373,16 +461,21 @@ public class SerializeConfig {
             } else if (JSONStreamAware.class.isAssignableFrom(clazz)) {
                 put(clazz, MiscCodec.instance);
             } else if (clazz.isEnum() || (clazz.getSuperclass() != null && clazz.getSuperclass().isEnum())) {
-                put(clazz, EnumSerializer.instance);
+                JSONType jsonType = clazz.getAnnotation(JSONType.class);
+                if (jsonType != null && jsonType.serializeEnumAsJavaBean()) {
+                    put(clazz, createJavaBeanSerializer(clazz));
+                } else {
+                    put(clazz, EnumSerializer.instance);
+                }
             } else if (clazz.isArray()) {
                 Class<?> componentType = clazz.getComponentType();
                 ObjectSerializer compObjectSerializer = getObjectWriter(componentType);
                 put(clazz, new ArraySerializer(componentType, compObjectSerializer));
             } else if (Throwable.class.isAssignableFrom(clazz)) {
-                SerializeBeanInfo beanInfo = TypeUtils.buildBeanInfo(clazz, null);
+                SerializeBeanInfo beanInfo = TypeUtils.buildBeanInfo(clazz, null, propertyNamingStrategy);
                 beanInfo.features |= SerializerFeature.WriteClassName.mask;
                 put(clazz, new JavaBeanSerializer(beanInfo));
-            } else if (TimeZone.class.isAssignableFrom(clazz)) {
+            } else if (TimeZone.class.isAssignableFrom(clazz) || Map.Entry.class.isAssignableFrom(clazz)) {
                 put(clazz, MiscCodec.instance);
             } else if (Appendable.class.isAssignableFrom(clazz)) {
                 put(clazz, AppendableSerializer.instance);
@@ -390,14 +483,14 @@ public class SerializeConfig {
                 put(clazz, ToStringSerializer.instance);
             } else if (Enumeration.class.isAssignableFrom(clazz)) {
                 put(clazz, EnumerationSerializer.instance);
-            } else if (Calendar.class.isAssignableFrom(clazz)) {
+            } else if (Calendar.class.isAssignableFrom(clazz) //
+                    || XMLGregorianCalendar.class.isAssignableFrom(clazz)) {
                 put(clazz, CalendarCodec.instance);
             } else if (Clob.class.isAssignableFrom(clazz)) {
                 put(clazz, ClobSeriliazer.instance);
             } else if (TypeUtils.isPath(clazz)) {
                 put(clazz, ToStringSerializer.instance);
-            } else if (Iterable.class.isAssignableFrom(clazz) // 
-                    || Iterator.class.isAssignableFrom(clazz)) {
+            } else if (Iterator.class.isAssignableFrom(clazz)) {
                 put(clazz, MiscCodec.instance);
             } else {
                 String className = clazz.getName();
@@ -423,6 +516,8 @@ public class SerializeConfig {
                 if ((!jdk8Error) //
                     && (className.startsWith("java.time.") //
                         || className.startsWith("java.util.Optional") //
+                        || className.equals("java.util.concurrent.atomic.LongAdder")
+                        || className.equals("java.util.concurrent.atomic.DoubleAdder")
                     )) {
                     try {
                         put(Class.forName("java.time.LocalDateTime"), Jdk8DateCodec.instance);
@@ -441,6 +536,9 @@ public class SerializeConfig {
                         put(Class.forName("java.util.OptionalDouble"), OptionalCodec.instance);
                         put(Class.forName("java.util.OptionalInt"), OptionalCodec.instance);
                         put(Class.forName("java.util.OptionalLong"), OptionalCodec.instance);
+
+                        put(Class.forName("java.util.concurrent.atomic.LongAdder"), AdderSerializer.instance);
+                        put(Class.forName("java.util.concurrent.atomic.DoubleAdder"), AdderSerializer.instance);
                         
                         writer = serializers.get(clazz);
                         if (writer != null) {
@@ -468,32 +566,67 @@ public class SerializeConfig {
                     }
                 }
                 
-                boolean isCglibProxy = false;
-                boolean isJavassistProxy = false;
-                for (Class<?> item : clazz.getInterfaces()) {
-                    String interfaceName = item.getName();
-                    if (interfaceName.equals("net.sf.cglib.proxy.Factory") //
-                        || interfaceName.equals("org.springframework.cglib.proxy.Factory")) {
-                        isCglibProxy = true;
-                        break;
-                    } else if (interfaceName.equals("javassist.util.proxy.ProxyObject") //
-                            || interfaceName.equals("org.apache.ibatis.javassist.util.proxy.ProxyObject")
-                            ) {
-                        isJavassistProxy = true;
-                        break;
+                if ((!springfoxError) //
+                    && className.equals("springfox.documentation.spring.web.json.Json")) {
+                    try {
+                        put(Class.forName("springfox.documentation.spring.web.json.Json"), //
+                            SwaggerJsonSerializer.instance);
+                        
+                        writer = serializers.get(clazz);
+                        if (writer != null) {
+                            return writer;
+                        }
+                    } catch (ClassNotFoundException e) {
+                        // skip
+                        springfoxError = true;
                     }
                 }
 
-                if (isCglibProxy || isJavassistProxy) {
+                if ((!guavaError) //
+                        && className.startsWith("com.google.common.collect.")) {
+                    try {
+                        put(Class.forName("com.google.common.collect.HashMultimap"), //
+                                GuavaCodec.instance);
+                        put(Class.forName("com.google.common.collect.LinkedListMultimap"), //
+                                GuavaCodec.instance);
+                        put(Class.forName("com.google.common.collect.ArrayListMultimap"), //
+                                GuavaCodec.instance);
+                        put(Class.forName("com.google.common.collect.TreeMultimap"), //
+                                GuavaCodec.instance);
+
+                        writer = serializers.get(clazz);
+                        if (writer != null) {
+                            return writer;
+                        }
+                    } catch (ClassNotFoundException e) {
+                        // skip
+                        guavaError = true;
+                    }
+                }
+
+                if (className.equals("net.sf.json.JSONNull")) {
+                    try {
+                        put(Class.forName("net.sf.json.JSONNull"), //
+                                MiscCodec.instance);
+                    } catch (ClassNotFoundException e) {
+                        // skip
+                    }
+                    writer = serializers.get(clazz);
+                    if (writer != null) {
+                        return writer;
+                    }
+                }
+
+                if (TypeUtils.isProxy(clazz)) {
                     Class<?> superClazz = clazz.getSuperclass();
 
                     ObjectSerializer superWriter = getObjectWriter(superClazz);
-                    putInternal(clazz, superWriter);
+                    put(clazz, superWriter);
                     return superWriter;
                 }
 
                 if (create) {
-                    putInternal(clazz, createJavaBeanSerializer(clazz));
+                    put(clazz, createJavaBeanSerializer(clazz));
                 }
             }
 
@@ -505,21 +638,22 @@ public class SerializeConfig {
 	public final ObjectSerializer get(Type key) {
 	    return this.serializers.get(key);
 	}
-	
+
+    public boolean put(Object type, Object value) {
+        return put((Type)type, (ObjectSerializer)value);
+    }
+
 	public boolean put(Type type, ObjectSerializer value) {
-	    boolean isEnum = false;
-	    if (type instanceof Class) {
-	        Class<?> clazz = (Class<?>) type;
-	        isEnum = clazz.isEnum();
-	    }
-	    if (isEnum) {
-	        
-	    }
-	    
-	    return putInternal(type, value);
+        return this.serializers.put(type, value);
 	}
-	
-	protected boolean putInternal(Type key, ObjectSerializer value) {
-        return this.serializers.put(key, value);
+
+    /**
+     * 1.2.24
+     * @param enumClasses
+     */
+	public void configEnumAsJavaBean(Class<? extends Enum>... enumClasses) {
+        for (Class<? extends Enum> enumClass : enumClasses) {
+            put(enumClass, createJavaBeanSerializer(enumClass));
+        }
     }
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 1999-2101 Alibaba Group.
+ * Copyright 1999-2017 Alibaba Group.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
  */
 package com.alibaba.fastjson.util;
 
+import java.lang.annotation.Annotation;
 import java.lang.reflect.AccessibleObject;
 import java.lang.reflect.Array;
 import java.lang.reflect.Field;
@@ -30,29 +31,14 @@ import java.math.BigInteger;
 import java.security.AccessControlException;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
-import java.util.AbstractCollection;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Calendar;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.Date;
-import java.util.EnumSet;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
-import java.util.TreeSet;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 import com.alibaba.fastjson.JSON;
 import com.alibaba.fastjson.JSONException;
 import com.alibaba.fastjson.JSONObject;
+import com.alibaba.fastjson.PropertyNamingStrategy;
 import com.alibaba.fastjson.annotation.JSONField;
 import com.alibaba.fastjson.annotation.JSONType;
 import com.alibaba.fastjson.parser.Feature;
@@ -60,6 +46,8 @@ import com.alibaba.fastjson.parser.JSONScanner;
 import com.alibaba.fastjson.parser.ParserConfig;
 import com.alibaba.fastjson.parser.deserializer.JavaBeanDeserializer;
 import com.alibaba.fastjson.parser.deserializer.ObjectDeserializer;
+import com.alibaba.fastjson.serializer.CalendarCodec;
+import com.alibaba.fastjson.serializer.DateCodec;
 import com.alibaba.fastjson.serializer.SerializeBeanInfo;
 import com.alibaba.fastjson.serializer.SerializerFeature;
 
@@ -69,6 +57,10 @@ import com.alibaba.fastjson.serializer.SerializerFeature;
 public class TypeUtils {
 
     public static boolean   compatibleWithJavaBean      = false;
+    
+    /** 根据field name的大小写输出输入数据*/
+    public static boolean   compatibleWithFieldName      = false;
+    
     private static boolean  setAccessibleEnable         = true;
 
     private static boolean  oracleTimestampMethodInited = false;
@@ -80,18 +72,18 @@ public class TypeUtils {
     private static boolean  optionalClassInited         = false;
     private static Class<?> optionalClass;
 
+    private static boolean transientClassInited         = false;
+    private static Class<? extends Annotation> transientClass;
+
     static {
         try {
-            String prop = System.getProperty("fastjson.compatibleWithJavaBean");
-            if ("true".equals(prop)) {
-                compatibleWithJavaBean = true;
-            } else if ("false".equals(prop)) {
-                compatibleWithJavaBean = false;
-            }
-        } catch (Throwable ex) {
+            TypeUtils.compatibleWithJavaBean = "true".equals(IOUtils.getStringProperty(IOUtils.FASTJSON_COMPATIBLEWITHJAVABEAN));
+            TypeUtils.compatibleWithFieldName = "true".equals(IOUtils.getStringProperty(IOUtils.FASTJSON_COMPATIBLEWITHFIELDNAME));
+        } catch (Throwable e) {
             // skip
         }
     }
+
 
     public static String castToString(Object value) {
         if (value == null) {
@@ -189,6 +181,10 @@ public class TypeUtils {
 
         String strVal = value.toString();
         if (strVal.length() == 0) {
+            return null;
+        }
+
+        if (value instanceof Map && ((Map) value).size() == 0) {
             return null;
         }
 
@@ -417,7 +413,16 @@ public class TypeUtils {
                 return null;
             }
 
-            longValue = Long.parseLong(strVal);
+            if (isNumber(strVal)) {
+                longValue = Long.parseLong(strVal);
+            } else {
+                JSONScanner scanner = new JSONScanner(strVal);
+                if (scanner.scanISO8601DateIfMatch(false)) {
+                    longValue = scanner.getCalendar().getTime().getTime();
+                } else {
+                    throw new JSONException("can not cast to Timestamp, value : " + strVal);
+                }
+            }
         }
 
         if (longValue <= 0) {
@@ -458,14 +463,40 @@ public class TypeUtils {
                 return null;
             }
 
-            longValue = Long.parseLong(strVal);
+            if (isNumber(strVal)) {
+                longValue = Long.parseLong(strVal);
+            } else {
+                JSONScanner scanner = new JSONScanner(strVal);
+                if (scanner.scanISO8601DateIfMatch(false)) {
+                    longValue = scanner.getCalendar().getTime().getTime();
+                } else {
+                    throw new JSONException("can not cast to Timestamp, value : " + strVal);
+                }
+            }
         }
 
         if (longValue <= 0) {
-            throw new JSONException("can not cast to Date, value : " + value);
+            throw new JSONException("can not cast to Timestamp, value : " + value);
         }
 
         return new java.sql.Timestamp(longValue);
+    }
+
+    public static boolean isNumber(String str) {
+        for (int i = 0; i < str.length(); ++i) {
+            char ch = str.charAt(i);
+            if (ch == '+' || ch == '-') {
+                if (i != 0) {
+                    return false;
+                } else {
+                    continue;
+                }
+            } else if (ch < '0' || ch > '9') {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     public static Long castToLong(Object value) {
@@ -507,6 +538,18 @@ public class TypeUtils {
             }
         }
 
+        if (value instanceof Map) {
+            Map map = (Map) value;
+            if (map.size() == 2
+                    && map.containsKey("andIncrement")
+                    && map.containsKey("andDecrement")) {
+                Iterator iter = map.values().iterator();
+                iter.next();
+                Object value2 = iter.next();
+                return castToLong(value2);
+            }
+        }
+
         throw new JSONException("can not cast to long, value : " + value);
     }
 
@@ -541,6 +584,18 @@ public class TypeUtils {
 
         if (value instanceof Boolean) {
             return ((Boolean) value).booleanValue() ? 1 : 0;
+        }
+
+        if (value instanceof Map) {
+            Map map = (Map) value;
+            if (map.size() == 2
+                    && map.containsKey("andIncrement")
+                    && map.containsKey("andDecrement")) {
+                Iterator iter = map.values().iterator();
+                iter.next();
+                Object value2 = iter.next();
+                return castToInt(value2);
+            }
         }
 
         throw new JSONException("can not cast to int, value : " + value);
@@ -586,6 +641,16 @@ public class TypeUtils {
             
             if ("false".equalsIgnoreCase(strVal) //
                 || "0".equals(strVal)) {
+                return Boolean.FALSE;
+            }
+
+            if ("Y".equalsIgnoreCase(strVal) //
+                    || "T".equals(strVal)) {
+                return Boolean.TRUE;
+            }
+
+            if ("F".equalsIgnoreCase(strVal) //
+                    || "N".equals(strVal)) {
                 return Boolean.FALSE;
             }
         }
@@ -724,6 +789,14 @@ public class TypeUtils {
             return (T) calendar;
         }
 
+        if (clazz.getName().equals("javax.xml.datatype.XMLGregorianCalendar")) {
+            Date date = castToDate(obj);
+            Calendar calendar = Calendar.getInstance(JSON.defaultTimeZone, JSON.defaultLocale);
+            calendar.setTime(date);
+
+            return (T) CalendarCodec.instance.createXMLGregorianCalendar(calendar);
+        }
+
         if (obj instanceof String) {
             String strVal = (String) obj;
 
@@ -736,9 +809,27 @@ public class TypeUtils {
             if (clazz == java.util.Currency.class) {
                 return (T) java.util.Currency.getInstance(strVal);
             }
+
+            if (clazz == java.util.Locale.class) {
+                return (T) toLocale(strVal);
+            }
         }
 
         throw new JSONException("can not cast to : " + clazz.getName());
+    }
+
+    public static Locale toLocale(String strVal) {
+        String[] items = strVal.split("_");
+
+        if (items.length == 1) {
+            return new Locale(items[0]);
+        }
+
+        if (items.length == 2) {
+            return new Locale(items[0], items[1]);
+        }
+
+        return new Locale(items[0], items[1], items[2]);
     }
 
     @SuppressWarnings({ "unchecked", "rawtypes" })
@@ -886,7 +977,11 @@ public class TypeUtils {
                 if (iClassObject instanceof String) {
                     String className = (String) iClassObject;
 
-                    Class<?> loadClazz = (Class<T>) loadClass(className);
+                    Class<?> loadClazz;
+                    if (config == null) {
+                        config = ParserConfig.global;
+                    }
+                    loadClazz = config.checkAutoType(className, null);
 
                     if (loadClazz == null) {
                         throw new ClassNotFoundException(className + " not found");
@@ -911,6 +1006,24 @@ public class TypeUtils {
                                                   new Class<?>[] { clazz }, object);
             }
 
+            if (clazz == Locale.class) {
+                Object arg0 = map.get("language");
+                Object arg1 = map.get("country");
+                if (arg0 instanceof String) {
+                    String language = (String) arg0;
+                    if (arg1 instanceof String) {
+                        String country = (String) arg1;
+                        return (T) new Locale(language, country);
+                    } else if (arg1 == null) {
+                        return (T) new Locale(language);
+                    }
+                }
+            }
+
+            if (clazz == String.class && map instanceof JSONObject) {
+                return (T) map.toString();
+            }
+
             if (config == null) {
                 config = ParserConfig.getGlobalInstance();
             }
@@ -922,7 +1035,7 @@ public class TypeUtils {
             }
             
             if (javaBeanDeser == null) {
-                throw new JSONException("can not get javaBeanDeserializer");
+                throw new JSONException("can not get javaBeanDeserializer. " + clazz.getName());
             }
             
             return (T) javaBeanDeser.createInstance(map, config);
@@ -931,7 +1044,7 @@ public class TypeUtils {
         }
     }
 
-    private static ConcurrentMap<String, Class<?>> mappings = new ConcurrentHashMap<String, Class<?>>();
+    private static ConcurrentMap<String, Class<?>> mappings = new ConcurrentHashMap<String, Class<?>>(16, 0.75f, 1);
 
     static {
         addBaseClassMappings();
@@ -956,7 +1069,89 @@ public class TypeUtils {
         mappings.put("[boolean", boolean[].class);
         mappings.put("[char", char[].class);
 
-        mappings.put(HashMap.class.getName(), HashMap.class);
+        mappings.put("[B", byte[].class);
+        mappings.put("[S", short[].class);
+        mappings.put("[I", int[].class);
+        mappings.put("[J", long[].class);
+        mappings.put("[F", float[].class);
+        mappings.put("[D", double[].class);
+        mappings.put("[C", char[].class);
+        mappings.put("[Z", boolean[].class);
+
+        Class<?>[] classes = new Class[] {
+                Object.class,
+                java.lang.Cloneable.class,
+                loadClass("java.lang.AutoCloseable"),
+                java.lang.Exception.class,
+                java.lang.RuntimeException.class,
+                java.lang.IllegalAccessError.class,
+                java.lang.IllegalAccessException.class,
+                java.lang.IllegalArgumentException.class,
+                java.lang.IllegalMonitorStateException.class,
+                java.lang.IllegalStateException.class,
+                java.lang.IllegalThreadStateException.class,
+                java.lang.IndexOutOfBoundsException.class,
+                java.lang.InstantiationError.class,
+                java.lang.InstantiationException.class,
+                java.lang.InternalError.class,
+                java.lang.InterruptedException.class,
+                java.lang.LinkageError.class,
+                java.lang.NegativeArraySizeException.class,
+                java.lang.NoClassDefFoundError.class,
+                java.lang.NoSuchFieldError.class,
+                java.lang.NoSuchFieldException.class,
+                java.lang.NoSuchMethodError.class,
+                java.lang.NoSuchMethodException.class,
+                java.lang.NullPointerException.class,
+                java.lang.NumberFormatException.class,
+                java.lang.OutOfMemoryError.class,
+                java.lang.SecurityException.class,
+                java.lang.StackOverflowError.class,
+                java.lang.StringIndexOutOfBoundsException.class,
+                java.lang.TypeNotPresentException.class,
+                java.lang.VerifyError.class,
+                java.lang.StackTraceElement.class,
+                java.util.HashMap.class,
+                java.util.Hashtable.class,
+                java.util.TreeMap.class,
+                java.util.IdentityHashMap.class,
+                java.util.WeakHashMap.class,
+                java.util.LinkedHashMap.class,
+                java.util.HashSet.class,
+                java.util.LinkedHashSet.class,
+                java.util.TreeSet.class,
+                java.util.concurrent.TimeUnit.class,
+                java.util.concurrent.ConcurrentHashMap.class,
+                loadClass("java.util.concurrent.ConcurrentSkipListMap"),
+                loadClass("java.util.concurrent.ConcurrentSkipListSet"),
+                java.util.concurrent.atomic.AtomicInteger.class,
+                java.util.concurrent.atomic.AtomicLong.class,
+                java.util.Collections.EMPTY_MAP.getClass(),
+                java.util.BitSet.class,
+                java.util.Calendar.class,
+                java.util.Date.class,
+                java.util.Locale.class,
+                java.util.UUID.class,
+                java.sql.Time.class,
+                java.sql.Date.class,
+                java.sql.Timestamp.class,
+                java.text.SimpleDateFormat.class,
+                com.alibaba.fastjson.JSONObject.class,
+                loadClass("java.awt.Rectangle"),
+                loadClass("java.awt.Point"),
+                loadClass("java.awt.Font"),
+                loadClass("java.awt.Color"),
+
+                loadClass("org.springframework.remoting.support.RemoteInvocation"),
+                loadClass("org.springframework.remoting.support.RemoteInvocationResult"),
+        };
+
+        for (Class clazz : classes) {
+            if (clazz == null) {
+                continue;
+            }
+            mappings.put(clazz.getName(), clazz);
+        }
     }
 
     public static void clearClassMapping() {
@@ -984,6 +1179,10 @@ public class TypeUtils {
         }
         
         return false;
+    }
+
+    public static Class<?> getClassFromMapping(String className) {
+        return mappings.get(className);
     }
 
     public static Class<?> loadClass(String className, ClassLoader classLoader) {
@@ -1022,7 +1221,7 @@ public class TypeUtils {
         try {
             ClassLoader contextClassLoader = Thread.currentThread().getContextClassLoader();
 
-            if (contextClassLoader != null) {
+            if (contextClassLoader != null && contextClassLoader != classLoader) {
                 clazz = contextClassLoader.loadClass(className);
                 mappings.put(className, clazz);
 
@@ -1043,11 +1242,28 @@ public class TypeUtils {
 
         return clazz;
     }
-    
-    public static SerializeBeanInfo buildBeanInfo(Class<?> beanType, Map<String, String> aliasMap) {
-        JSONType jsonType = beanType.getAnnotation(JSONType.class);
+
+    public static SerializeBeanInfo buildBeanInfo(Class<?> beanType //
+            , Map<String, String> aliasMap //
+            , PropertyNamingStrategy propertyNamingStrategy) {
+        return buildBeanInfo(beanType, aliasMap, propertyNamingStrategy, false);
+    }
+
+    public static SerializeBeanInfo buildBeanInfo(Class<?> beanType //
+            , Map<String, String> aliasMap //
+            , PropertyNamingStrategy propertyNamingStrategy //
+            , boolean fieldBased //
+    ) {
         
-        List<FieldInfo> fieldInfoList = computeGetters(beanType, jsonType, aliasMap, false);
+        JSONType jsonType = beanType.getAnnotation(JSONType.class);
+
+        // fieldName,field ，先生成fieldName的快照，减少之后的findField的轮询
+        Map<String, Field> fieldCacheMap = new HashMap<String, Field>();
+        ParserConfig.parserAllFieldToCache(beanType, fieldCacheMap);
+
+        List<FieldInfo> fieldInfoList = fieldBased
+                ? computeGettersWithFieldBase(beanType, aliasMap, false, propertyNamingStrategy) //
+                : computeGetters(beanType, jsonType, aliasMap, fieldCacheMap, false, propertyNamingStrategy);
         FieldInfo[] fields = new FieldInfo[fieldInfoList.size()];
         fieldInfoList.toArray(fields);
         
@@ -1069,7 +1285,9 @@ public class TypeUtils {
         FieldInfo[] sortedFields;
         List<FieldInfo> sortedFieldList;
         if (orders != null && orders.length != 0) {
-            sortedFieldList = TypeUtils.computeGetters(beanType, jsonType, aliasMap, true);
+            sortedFieldList = fieldBased
+                    ? computeGettersWithFieldBase(beanType, aliasMap, true, propertyNamingStrategy) //
+                    : computeGetters(beanType, jsonType, aliasMap,fieldCacheMap, true, propertyNamingStrategy);
         } else {
             sortedFieldList = new ArrayList<FieldInfo>(fieldInfoList);
             Collections.sort(sortedFieldList);
@@ -1084,10 +1302,41 @@ public class TypeUtils {
         return new SerializeBeanInfo(beanType, jsonType, typeName, features, fields, sortedFields);
     }
 
-    public static List<FieldInfo> computeGetters(Class<?> clazz, // 
-                                                 JSONType jsonType, // 
+    public static List<FieldInfo> computeGettersWithFieldBase(
+            Class<?> clazz, //
+            Map<String, String> aliasMap, //
+            boolean sorted, //
+            PropertyNamingStrategy propertyNamingStrategy) {
+        Map<String, FieldInfo> fieldInfoMap = new LinkedHashMap<String, FieldInfo>();
+
+        for (Class<?> currentClass = clazz; currentClass != null; currentClass = currentClass.getSuperclass()) {
+            Field[] fields = currentClass.getDeclaredFields();
+
+            computeFields(currentClass, aliasMap, propertyNamingStrategy, fieldInfoMap, fields);
+        }
+
+        return getFieldInfos(clazz, sorted, fieldInfoMap);
+    }
+
+    public static List<FieldInfo> computeGetters(Class<?> clazz, Map<String, String> aliasMap) {
+        return computeGetters(clazz, aliasMap, true);
+    }
+
+    public static List<FieldInfo> computeGetters(Class<?> clazz, Map<String, String> aliasMap, boolean sorted) {
+        JSONType jsonType = clazz.getAnnotation(JSONType.class);
+        Map<String, Field> fieldCacheMap = new HashMap<String, Field>();
+        ParserConfig.parserAllFieldToCache(clazz, fieldCacheMap);
+
+        return computeGetters(clazz, jsonType, aliasMap, fieldCacheMap, sorted, PropertyNamingStrategy.CamelCase);
+    }
+
+    public static List<FieldInfo> computeGetters(Class<?> clazz, //
+                                                 JSONType jsonType, //
                                                  Map<String, String> aliasMap, //
-                                                 boolean sorted) {
+                                                 Map<String, Field> fieldCacheMap, //
+                                                 boolean sorted, //
+                                                 PropertyNamingStrategy propertyNamingStrategy //
+    ) {
         Map<String, FieldInfo> fieldInfoMap = new LinkedHashMap<String, FieldInfo>();
 
         for (Method method : clazz.getMethods()) {
@@ -1119,7 +1368,7 @@ public class TypeUtils {
             JSONField annotation = method.getAnnotation(JSONField.class);
 
             if (annotation == null) {
-                annotation = getSupperMethodAnnotation(clazz, method);
+                annotation = getSuperMethodAnnotation(clazz, method);
             }
 
             if (annotation != null) {
@@ -1161,17 +1410,22 @@ public class TypeUtils {
                     continue;
                 }
 
+                if (methodName.equals("getDeclaringClass") && clazz.isEnum()) {
+                    continue;
+                }
+
                 char c3 = methodName.charAt(3);
 
                 String propertyName;
                 if (Character.isUpperCase(c3) //
                     || c3 > 512 // for unicode method name
                 ) {
-                    if (compatibleWithJavaBean) {
+                   if (compatibleWithJavaBean) {
                         propertyName = decapitalize(methodName.substring(3));
                     } else {
                         propertyName = Character.toLowerCase(methodName.charAt(3)) + methodName.substring(4);
                     }
+                    propertyName = getPropertyNameByCompatibleFieldName(fieldCacheMap, methodName,  propertyName,3);
                 } else if (c3 == '_') {
                     propertyName = methodName.substring(4);
                 } else if (c3 == 'f') {
@@ -1187,8 +1441,17 @@ public class TypeUtils {
                 if (ignore) {
                     continue;
                 }
+                //假如bean的field很多的情况一下，轮询时将大大降低效率
+                Field field = ParserConfig.getFieldFromCache(propertyName, fieldCacheMap);
 
-                Field field = ParserConfig.getField(clazz, propertyName);
+                if (field == null && propertyName.length() > 1) {
+                    char ch = propertyName.charAt(1);
+                    if (ch >= 'A' && ch <= 'Z') {
+                        String javaBeanCompatiblePropertyName = decapitalize(methodName.substring(3));
+                        field = ParserConfig.getFieldFromCache(javaBeanCompatiblePropertyName, fieldCacheMap);
+                    }
+                }
+
                 JSONField fieldAnnotation = null;
                 if (field != null) {
                     fieldAnnotation = field.getAnnotation(JSONField.class);
@@ -1224,6 +1487,10 @@ public class TypeUtils {
                     if (propertyName == null) {
                         continue;
                     }
+                }
+
+                if (propertyNamingStrategy != null) {
+                    propertyName = propertyNamingStrategy.translate(propertyName);
                 }
 
                 FieldInfo fieldInfo = new FieldInfo(propertyName, method, field, clazz, null, ordinal, serialzeFeatures, parserFeatures,
@@ -1236,6 +1503,11 @@ public class TypeUtils {
                     continue;
                 }
 
+                if (method.getReturnType() != Boolean.TYPE
+                        && method.getReturnType() != Boolean.class) {
+                    continue;
+                }
+
                 char c2 = methodName.charAt(2);
 
                 String propertyName;
@@ -1245,6 +1517,7 @@ public class TypeUtils {
                     } else {
                         propertyName = Character.toLowerCase(methodName.charAt(2)) + methodName.substring(3);
                     }
+                    propertyName = getPropertyNameByCompatibleFieldName(fieldCacheMap, methodName,  propertyName,2);
                 } else if (c2 == '_') {
                     propertyName = methodName.substring(3);
                 } else if (c2 == 'f') {
@@ -1253,10 +1526,16 @@ public class TypeUtils {
                     continue;
                 }
 
-                Field field = ParserConfig.getField(clazz, propertyName);
+                boolean ignore = isJSONTypeIgnore(clazz, propertyName);
+
+                if (ignore) {
+                    continue;
+                }
+
+                Field field = ParserConfig.getFieldFromCache(propertyName,fieldCacheMap);
 
                 if (field == null) {
-                    field = ParserConfig.getField(clazz, methodName);
+                    field = ParserConfig.getFieldFromCache(methodName,fieldCacheMap);
                 }
 
                 JSONField fieldAnnotation = null;
@@ -1271,7 +1550,7 @@ public class TypeUtils {
                         ordinal = fieldAnnotation.ordinal();
                         serialzeFeatures = SerializerFeature.of(fieldAnnotation.serialzeFeatures());
                         parserFeatures = Feature.of(fieldAnnotation.parseFeatures());
-                        
+
                         if (fieldAnnotation.name().length() != 0) {
                             propertyName = fieldAnnotation.name();
 
@@ -1296,54 +1575,28 @@ public class TypeUtils {
                     }
                 }
 
+                if (propertyNamingStrategy != null) {
+                    propertyName = propertyNamingStrategy.translate(propertyName);
+                }
+
+                //优先选择get
+                if (fieldInfoMap.containsKey(propertyName)) {
+                    continue;
+                }
+
                 FieldInfo fieldInfo = new FieldInfo(propertyName, method, field, clazz, null, ordinal, serialzeFeatures, parserFeatures,
                                                     annotation, fieldAnnotation, label);
                 fieldInfoMap.put(propertyName, fieldInfo);
             }
         }
 
-        for (Field field : clazz.getFields()) {
-            if (Modifier.isStatic(field.getModifiers())) {
-                continue;
-            }
+        Field[] fields = clazz.getFields();
+        computeFields(clazz, aliasMap, propertyNamingStrategy, fieldInfoMap, fields);
 
-            JSONField fieldAnnotation = field.getAnnotation(JSONField.class);
+        return getFieldInfos(clazz, sorted, fieldInfoMap);
+    }
 
-            int ordinal = 0, serialzeFeatures = 0, parserFeatures = 0;
-            String propertyName = field.getName();
-            String label = null;
-            if (fieldAnnotation != null) {
-                if (!fieldAnnotation.serialize()) {
-                    continue;
-                }
-
-                ordinal = fieldAnnotation.ordinal();
-                serialzeFeatures = SerializerFeature.of(fieldAnnotation.serialzeFeatures());
-                parserFeatures = Feature.of(fieldAnnotation.parseFeatures());
-
-                if (fieldAnnotation.name().length() != 0) {
-                    propertyName = fieldAnnotation.name();
-                }
-
-                if (fieldAnnotation.label().length() != 0) {
-                    label = fieldAnnotation.label();
-                }
-            }
-
-            if (aliasMap != null) {
-                propertyName = aliasMap.get(propertyName);
-                if (propertyName == null) {
-                    continue;
-                }
-            }
-
-            if (!fieldInfoMap.containsKey(propertyName)) {
-                FieldInfo fieldInfo = new FieldInfo(propertyName, null, field, clazz, null, ordinal, serialzeFeatures, parserFeatures,
-                                                    null, fieldAnnotation, label);
-                fieldInfoMap.put(propertyName, fieldInfo);
-            }
-        }
-
+    private static List<FieldInfo> getFieldInfos(Class<?> clazz, boolean sorted, Map<String, FieldInfo> fieldInfoMap) {
         List<FieldInfo> fieldInfoList = new ArrayList<FieldInfo>();
 
         boolean containsAll = false;
@@ -1384,7 +1637,72 @@ public class TypeUtils {
         return fieldInfoList;
     }
 
-    public static JSONField getSupperMethodAnnotation(final Class<?> clazz, final Method method) {
+    private static void computeFields(
+            Class<?> clazz, //
+            Map<String, String> aliasMap, //
+            PropertyNamingStrategy propertyNamingStrategy, //
+            Map<String, FieldInfo> fieldInfoMap, //
+            Field[] fields) {
+
+        for (Field field : fields) {
+            if (Modifier.isStatic(field.getModifiers())) {
+                continue;
+            }
+
+            JSONField fieldAnnotation = field.getAnnotation(JSONField.class);
+
+            int ordinal = 0, serialzeFeatures = 0, parserFeatures = 0;
+            String propertyName = field.getName();
+            String label = null;
+            if (fieldAnnotation != null) {
+                if (!fieldAnnotation.serialize()) {
+                    continue;
+                }
+
+                ordinal = fieldAnnotation.ordinal();
+                serialzeFeatures = SerializerFeature.of(fieldAnnotation.serialzeFeatures());
+                parserFeatures = Feature.of(fieldAnnotation.parseFeatures());
+
+                if (fieldAnnotation.name().length() != 0) {
+                    propertyName = fieldAnnotation.name();
+                }
+
+                if (fieldAnnotation.label().length() != 0) {
+                    label = fieldAnnotation.label();
+                }
+            }
+
+            if (aliasMap != null) {
+                propertyName = aliasMap.get(propertyName);
+                if (propertyName == null) {
+                    continue;
+                }
+            }
+
+            if (propertyNamingStrategy != null) {
+                propertyName = propertyNamingStrategy.translate(propertyName);
+            }
+
+            if (!fieldInfoMap.containsKey(propertyName)) {
+                FieldInfo fieldInfo = new FieldInfo(propertyName, null, field, clazz, null, ordinal, serialzeFeatures, parserFeatures,
+                                                    null, fieldAnnotation, label);
+                fieldInfoMap.put(propertyName, fieldInfo);
+            }
+        }
+    }
+
+    private static String getPropertyNameByCompatibleFieldName(Map<String, Field> fieldCacheMap, String methodName,
+                                                               String propertyName,int fromIdx) {
+        if (compatibleWithFieldName){
+               if (!fieldCacheMap.containsKey(propertyName)){
+                   String tempPropertyName=methodName.substring(fromIdx);
+                   return  fieldCacheMap.containsKey(tempPropertyName)?tempPropertyName:propertyName;
+               }
+           }
+        return propertyName;
+    }
+
+    public static JSONField getSuperMethodAnnotation(final Class<?> clazz, final Method method) {
         Class<?>[] interfaces = clazz.getInterfaces();
         if (interfaces.length > 0) {
             Class<?>[] types = method.getParameterTypes();
@@ -1416,6 +1734,42 @@ public class TypeUtils {
                 }
             }
         }
+
+        Class<?> superClass = clazz.getSuperclass();
+        if (superClass == null) {
+            return null;
+        }
+
+        if (Modifier.isAbstract(superClass.getModifiers())) {
+            Class<?>[] types = method.getParameterTypes();
+
+            for (Method interfaceMethod : superClass.getMethods()) {
+                Class<?>[] interfaceTypes = interfaceMethod.getParameterTypes();
+                if (interfaceTypes.length != types.length) {
+                    continue;
+                }
+                if (!interfaceMethod.getName().equals(method.getName())) {
+                    continue;
+                }
+                boolean match = true;
+                for (int i = 0; i < types.length; ++i) {
+                    if (!interfaceTypes[i].equals(types[i])) {
+                        match = false;
+                        break;
+                    }
+                }
+
+                if (!match) {
+                    continue;
+                }
+
+                JSONField annotation = interfaceMethod.getAnnotation(JSONField.class);
+                if (annotation != null) {
+                    return annotation;
+                }
+            }
+        }
+
         return null;
     }
 
@@ -1581,10 +1935,46 @@ public class TypeUtils {
         }
     }
 
+    public static Type getCollectionItemType(Type fieldType) {
+        Type itemType = null;
+        Class<?> clazz = null;
+        if (fieldType instanceof ParameterizedType) {
+            Type actualTypeArgument = ((ParameterizedType) fieldType).getActualTypeArguments()[0];
+
+            if (actualTypeArgument instanceof WildcardType) {
+                WildcardType wildcardType = (WildcardType) actualTypeArgument;
+                Type[] upperBounds = wildcardType.getUpperBounds();
+                if (upperBounds.length == 1) {
+                    actualTypeArgument = upperBounds[0];
+                }
+            }
+
+            itemType = actualTypeArgument;
+        } else if (fieldType instanceof Class<?> //
+                && !(clazz = (Class<?>) fieldType).getName().startsWith("java.")) {
+            Type superClass = clazz.getGenericSuperclass();
+            itemType = TypeUtils.getCollectionItemType(superClass);
+        }
+
+        if (itemType == null) {
+            itemType = Object.class;
+        }
+
+        return itemType;
+    }
+
     public static Class<?> getCollectionItemClass(Type fieldType) {
         if (fieldType instanceof ParameterizedType) {
             Class<?> itemClass;
             Type actualTypeArgument = ((ParameterizedType) fieldType).getActualTypeArguments()[0];
+
+            if (actualTypeArgument instanceof WildcardType) {
+                WildcardType wildcardType = (WildcardType) actualTypeArgument;
+                Type[] upperBounds = wildcardType.getUpperBounds();
+                if (upperBounds.length == 1) {
+                    actualTypeArgument = upperBounds[0];
+                }
+            }
 
             if (actualTypeArgument instanceof Class) {
                 itemClass = (Class<?>) actualTypeArgument;
@@ -1628,7 +2018,7 @@ public class TypeUtils {
             try {
                 list = (Collection) rawClass.newInstance();
             } catch (Exception e) {
-                throw new JSONException("create instane error, class " + rawClass.getName());
+                throw new JSONException("create instance error, class " + rawClass.getName());
             }
         }
         return list;
@@ -1642,5 +2032,46 @@ public class TypeUtils {
         } else {
             throw new JSONException("TODO");
         }
+    }
+
+    public static boolean isProxy(Class<?> clazz) {
+        for (Class<?> item : clazz.getInterfaces()) {
+            String interfaceName = item.getName();
+            if (interfaceName.equals("net.sf.cglib.proxy.Factory") //
+                    || interfaceName.equals("org.springframework.cglib.proxy.Factory")) {
+                return true;
+            }
+
+            if (interfaceName.equals("javassist.util.proxy.ProxyObject") //
+                    || interfaceName.equals("org.apache.ibatis.javassist.util.proxy.ProxyObject")
+                    ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public static boolean isTransient(Method method) {
+        if (method == null) {
+            return false;
+        }
+
+        if (!transientClassInited) {
+            try {
+                transientClass = (Class<? extends Annotation>) Class.forName("java.beans.Transient");
+            } catch (Exception e) {
+                // skip
+            } finally {
+                transientClassInited = true;
+            }
+        }
+
+        if (transientClass != null) {
+            Annotation annotation = method.getAnnotation(transientClass);
+            return annotation != null;
+        }
+
+        return false;
     }
 }

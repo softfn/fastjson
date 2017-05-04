@@ -1,5 +1,5 @@
 /*
- * Copyright 1999-2101 Alibaba Group.
+ * Copyright 1999-2017 Alibaba Group.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -139,7 +139,18 @@ public class JSONSerializer extends SerializeFilterable {
     }
 
     public boolean containsReference(Object value) {
-        return references != null && references.containsKey(value);
+        if (references == null) {
+            return false;
+        }
+
+        SerialContext refContext = references.get(value);
+        if (refContext == null) {
+            return false;
+        }
+
+        Object fieldName = refContext.fieldName;
+
+        return fieldName == null || fieldName instanceof Integer || fieldName instanceof String;
     }
 
     public void writeReference(Object object) {

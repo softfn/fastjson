@@ -4,12 +4,7 @@ import static com.alibaba.fastjson.util.ASMUtils.desc;
 import static com.alibaba.fastjson.util.ASMUtils.type;
 
 import java.io.Serializable;
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
-import java.lang.reflect.ParameterizedType;
-import java.lang.reflect.Type;
+import java.lang.reflect.*;
 import java.math.BigDecimal;
 import java.util.Collection;
 import java.util.HashMap;
@@ -30,6 +25,7 @@ import com.alibaba.fastjson.parser.ParserConfig;
 import com.alibaba.fastjson.util.ASMClassLoader;
 import com.alibaba.fastjson.util.ASMUtils;
 import com.alibaba.fastjson.util.FieldInfo;
+import com.alibaba.fastjson.util.TypeUtils;
 
 public class ASMSerializerFactory implements Opcodes {
 
@@ -158,7 +154,7 @@ public class ASMSerializerFactory implements Opcodes {
 
         for (FieldInfo fieldInfo : getters) {
             if (fieldInfo.fieldClass.isPrimitive() //
-                || fieldInfo.fieldClass.isEnum() //
+                //|| fieldInfo.fieldClass.isEnum() //
                 || fieldInfo.fieldClass == String.class) {
                 continue;
             }
@@ -185,7 +181,7 @@ public class ASMSerializerFactory implements Opcodes {
         for (int i = 0; i < getters.length; ++i) {
             FieldInfo fieldInfo = getters[i];
             if (fieldInfo.fieldClass.isPrimitive() //
-                || fieldInfo.fieldClass.isEnum() //
+//                || fieldInfo.fieldClass.isEnum() //
                 || fieldInfo.fieldClass == String.class) {
                 continue;
             }
@@ -250,6 +246,19 @@ public class ASMSerializerFactory implements Opcodes {
                                   null, //
                                   new String[] { "java/io/IOException" } //
             );
+
+            {
+                Label endIf_ = new Label();
+                mw.visitVarInsn(ALOAD, Context.obj);
+                //serializer.writeNull();
+                mw.visitJumpInsn(IFNONNULL, endIf_);
+                mw.visitVarInsn(ALOAD, Context.serializer);
+                mw.visitMethodInsn(INVOKEVIRTUAL, JSONSerializer,
+                        "writeNull", "()V");
+
+                mw.visitInsn(RETURN);
+                mw.visitLabel(endIf_);
+            }
 
             mw.visitVarInsn(ALOAD, Context.serializer);
             mw.visitFieldInsn(GETFIELD, JSONSerializer, "out", SerializeWriter_desc);
@@ -749,6 +758,7 @@ public class ASMSerializerFactory implements Opcodes {
 
     private void generateWriteMethod(Class<?> clazz, MethodVisitor mw, FieldInfo[] getters,
                                      Context context) throws Exception {
+
         // if (serializer.containsReference(object)) {
         Label end = new Label();
 
@@ -1155,7 +1165,7 @@ public class ASMSerializerFactory implements Opcodes {
         if (method != null) {
             mw.visitVarInsn(ALOAD, context.var("entity"));
             Class<?> declaringClass = method.getDeclaringClass();
-            mw.visitMethodInsn(INVOKEVIRTUAL, type(declaringClass), method.getName(), desc(method));
+            mw.visitMethodInsn(declaringClass.isInterface() ? INVOKEINTERFACE : INVOKEVIRTUAL, type(declaringClass), method.getName(), desc(method));
             if (!method.getReturnType().equals(fieldInfo.fieldClass)) {
                 mw.visitTypeInsn(CHECKCAST, type(fieldInfo.fieldClass)); // cast
             }
@@ -1255,12 +1265,7 @@ public class ASMSerializerFactory implements Opcodes {
     private void _list(Class<?> clazz, MethodVisitor mw, FieldInfo fieldInfo, Context context) {
         Type propertyType = fieldInfo.fieldType;
 
-        Type elementType;
-        if (propertyType instanceof Class) {
-            elementType = Object.class;
-        } else {
-            elementType = ((ParameterizedType) propertyType).getActualTypeArguments()[0];
-        }
+        Type elementType = TypeUtils.getCollectionItemType(propertyType);
 
         Class<?> elementClass = null;
         if (elementType instanceof Class<?>) {
@@ -1473,13 +1478,11 @@ public class ASMSerializerFactory implements Opcodes {
     }
 
     private void _filters(MethodVisitor mw, FieldInfo property, Context context, Label _end) {
-        if (property.field != null) {
-            if (Modifier.isTransient(property.field.getModifiers())) {
-                mw.visitVarInsn(ALOAD, context.var("out"));
-                mw.visitLdcInsn(SerializerFeature.SkipTransientField.mask);
-                mw.visitMethodInsn(INVOKEVIRTUAL, SerializeWriter, "isEnabled", "(I)Z");
-                mw.visitJumpInsn(IFNE, _end);
-            }
+        if (property.fieldTransient) {
+            mw.visitVarInsn(ALOAD, context.var("out"));
+            mw.visitLdcInsn(SerializerFeature.SkipTransientField.mask);
+            mw.visitMethodInsn(INVOKEVIRTUAL, SerializeWriter, "isEnabled", "(I)Z");
+            mw.visitJumpInsn(IFNE, _end);
         }
 
         _notWriteDefault(mw, property, context, _end);
@@ -1556,7 +1559,7 @@ public class ASMSerializerFactory implements Opcodes {
 
         Label classIfEnd_ = new Label(), classIfElse_ = new Label();
         if (Modifier.isPublic(fieldClass.getModifiers()) //
-            && !ParserConfig.isPrimitive(fieldClass) //
+            && !ParserConfig.isPrimitive2(fieldClass) //
         ) {
             mw.visitVarInsn(ALOAD, context.var("object"));
             mw.visitMethodInsn(INVOKEVIRTUAL, "java/lang/Object", "getClass", "()Ljava/lang/Class;");
@@ -1939,9 +1942,9 @@ public class ASMSerializerFactory implements Opcodes {
             ;
         }
 
-        if ((features & SerializerFeature.WriteMapNullValue.mask) == 0) {
+        if ((features & SerializerFeature.WRITE_MAP_NULL_FEATURES) == 0) {
             mw.visitVarInsn(ALOAD, context.var("out"));
-            mw.visitLdcInsn(SerializerFeature.WriteMapNullValue.mask);
+            mw.visitLdcInsn(SerializerFeature.WRITE_MAP_NULL_FEATURES);
             mw.visitMethodInsn(INVOKEVIRTUAL, SerializeWriter, "isEnabled", "(I)Z");
             mw.visitJumpInsn(IFEQ, _else);
         }
