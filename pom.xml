@@ -437,4 +437,11 @@
 		</profile>
 
 	</profiles>
+
+	<distributionManagement>
+		<repository>
+			<id>softfn-repo</id>
+			<url>file:../mvn-repo/repository/</url>
+		</repository>
+	</distributionManagement>
 </project>
